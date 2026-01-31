@@ -3,8 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>HandCam + Absolute Cinema</title>
-
+  <title>HandCam 1080p</title>
   <style>
     html, body {
       margin: 0;
@@ -29,29 +28,6 @@
       top: 0;
       left: 0;
       pointer-events: none;
-    }
-
-    /* IMAGEM ABSOLUTE CINEMA NO CENTRO */
-    #absoluteCinema {
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      width: 520px;
-      max-width: 80vw;
-      height: auto;
-      z-index: 99999;
-      display: none;
-      border-radius: 16px;
-      box-shadow: 0 25px 60px rgba(0,0,0,0.65);
-      opacity: 0;
-      transition: opacity 0.18s ease;
-      pointer-events: none;
-    }
-
-    #absoluteCinema.show {
-      display: block;
-      opacity: 1;
     }
 
     .block {
@@ -83,20 +59,12 @@
     }
   </style>
 </head>
-
 <body>
 
 <div id="stage">
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas"></canvas>
   <canvas id="draw"></canvas>
-
-  <!-- IMAGEM NO CENTRO (aparece quando levantar as duas mãos abertas) -->
-  <img
-    id="absoluteCinema"
-    alt="ABSOLUTE CINEMA"
-    src="https://i.pinimg.com/736x/0f/f4/e4/0ff4e4a3475c1a26c8079f0a2dbdafbc.jpg"
-  />
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
@@ -110,6 +78,7 @@ const STAGE_H = 1080;
 
 const stage = document.getElementById("stage");
 
+/* Auto scale para caber em qualquer monitor (mas mantém 1080p internamente) */
 function fitStage() {
   const sx = window.innerWidth / STAGE_W;
   const sy = window.innerHeight / STAGE_H;
@@ -141,16 +110,6 @@ drawCtx.strokeStyle = "#FFFF00";
 drawCtx.lineWidth = 6;
 drawCtx.lineCap = "round";
 drawCtx.globalCompositeOperation = "source-over";
-
-/* ===================== ABSOLUTE CINEMA IMG ===================== */
-const absoluteCinemaImg = document.getElementById("absoluteCinema");
-
-function showAbsoluteCinema() {
-  absoluteCinemaImg.classList.add("show");
-}
-function hideAbsoluteCinema() {
-  absoluteCinemaImg.classList.remove("show");
-}
 
 /* ===================== HAND STATE ===================== */
 let Hands_State = [];
@@ -193,7 +152,6 @@ function pinch(hand) {
   return d < 0.06;
 }
 
-/* Dedo indicador apontando (você já tinha) */
 function isPointing(hand) {
   if (!hand.landmarks) return false;
   const lm = hand.landmarks;
@@ -208,60 +166,6 @@ function isPointing(hand) {
   const thumbFolded = Math.hypot(thumbTip.x - thumbIp.x, thumbTip.y - thumbIp.y) < 0.05;
 
   return indexExtended && middleFolded && ringFolded && pinkyFolded && thumbFolded;
-}
-
-/* ===================== DETECTAR "MÃO ABERTA" ===================== */
-/*
-  Mão aberta = dedos estendidos
-  (thumb é meio chato, então a gente exige 4 dedos principais)
-*/
-function isHandOpen(hand) {
-  if (!hand.landmarks) return false;
-  const lm = hand.landmarks;
-
-  const indexOpen  = lm[8].y  < lm[6].y  - 0.02;
-  const middleOpen = lm[12].y < lm[10].y - 0.02;
-  const ringOpen   = lm[16].y < lm[14].y - 0.02;
-  const pinkyOpen  = lm[20].y < lm[18].y - 0.02;
-
-  return indexOpen && middleOpen && ringOpen && pinkyOpen;
-}
-
-/* ===================== ABSOLUTE CINEMA TRIGGER ===================== */
-let lastTriggerTime = 0;
-let cinemaVisible = false;
-
-function updateAbsoluteCinema() {
-  // precisa de 2 mãos detectadas
-  if (Hands_State.length < 2) {
-    if (cinemaVisible) {
-      hideAbsoluteCinema();
-      cinemaVisible = false;
-    }
-    return;
-  }
-
-  const openHands = Hands_State.filter(h => isHandOpen(h));
-
-  // se as duas mãos estão abertas
-  const bothOpen = openHands.length >= 2;
-
-  const now = Date.now();
-  const COOLDOWN_MS = 350; // evita piscar
-
-  if (bothOpen) {
-    if (!cinemaVisible && (now - lastTriggerTime > COOLDOWN_MS)) {
-      showAbsoluteCinema();
-      cinemaVisible = true;
-      lastTriggerTime = now;
-    }
-  } else {
-    if (cinemaVisible && (now - lastTriggerTime > COOLDOWN_MS)) {
-      hideAbsoluteCinema();
-      cinemaVisible = false;
-      lastTriggerTime = now;
-    }
-  }
 }
 
 /* ===================== UPDATE BLOCKS ===================== */
@@ -452,13 +356,9 @@ hands.onResults(results => {
       drawConnectors(ctx, mirrored, HAND_CONNECTIONS, { color: "#00FF00" });
       drawLandmarks(ctx, mirrored, { color: "#FF0000", radius: 4 });
     }
+
+    updateBlocks();
   }
-
-  // 🔥 AQUI: detecta as duas mãos abertas e mostra a imagem
-  updateAbsoluteCinema();
-
-  // continua funcionando os blocos
-  updateBlocks();
 });
 
 /* ===================== CAMERA ===================== */
