@@ -2,15 +2,26 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Detecção de Mão + Blocos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HandCam + Absolute Cinema</title>
 
   <style>
-    body {
+    html, body {
       margin: 0;
+      padding: 0;
       overflow: hidden;
       background: black;
-      touch-action: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Área fixa 1080p (ótimo pro OBS) */
+    #stage {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      background: black;
+      transform-origin: top left;
     }
 
     video, canvas {
@@ -20,18 +31,35 @@
       pointer-events: none;
     }
 
-    video {
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
+    /* IMAGEM ABSOLUTE CINEMA NO CENTRO */
+    #absoluteCinema {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 520px;
+      max-width: 80vw;
+      height: auto;
+      z-index: 99999;
+      display: none;
+      border-radius: 16px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.65);
+      opacity: 0;
+      transition: opacity 0.18s ease;
+      pointer-events: none;
+    }
+
+    #absoluteCinema.show {
+      display: block;
+      opacity: 1;
     }
 
     .block {
       position: absolute;
-      width: 100px;
-      height: 100px;
+      width: 140px;
+      height: 140px;
       background: #3498db;
-      border-radius: 10px;
+      border-radius: 14px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -39,403 +67,435 @@
       color: white;
       user-select: none;
       cursor: grab;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
       z-index: 3;
-      will-change: transform, left, top, width, height;
+      font-size: 22px;
     }
 
     .block:hover {
-      transform: scale(1.05);
-      box-shadow: 0 6px 12px rgba(52, 152, 219, 0.5);
+      transform: scale(1.03);
+      box-shadow: 0 14px 35px rgba(52, 152, 219, 0.55);
     }
 
     .block.grabbed {
       cursor: grabbing;
-      box-shadow: 0 10px 20px rgba(52, 152, 219, 0.8);
+      box-shadow: 0 18px 45px rgba(52, 152, 219, 0.8);
     }
   </style>
 </head>
 
 <body>
+
+<div id="stage">
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas"></canvas>
   <canvas id="draw"></canvas>
 
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <!-- IMAGEM NO CENTRO (aparece quando levantar as duas mãos abertas) -->
+  <img
+    id="absoluteCinema"
+    alt="ABSOLUTE CINEMA"
+    src="https://i.pinimg.com/736x/0f/f4/e4/0ff4e4a3475c1a26c8079f0a2dbdafbc.jpg"
+  />
+</div>
 
-  <script>
-    /* ===================== SETUP ===================== */
-    const video = document.getElementById("video");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d", { alpha: true });
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
-    const drawCanvas = document.getElementById("draw");
-    const drawCtx = drawCanvas.getContext("2d", { alpha: true });
+<script>
+/* ===================== FIXED 1080p STAGE ===================== */
+const STAGE_W = 1920;
+const STAGE_H = 1080;
 
-    // Limita DPR pra evitar travar no celular
-    const DPR = Math.min(window.devicePixelRatio || 1, 1.5);
+const stage = document.getElementById("stage");
 
-    function resizeCanvases() {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+function fitStage() {
+  const sx = window.innerWidth / STAGE_W;
+  const sy = window.innerHeight / STAGE_H;
+  const s = Math.min(sx, sy);
+  stage.style.transform = `scale(${s})`;
+}
+window.addEventListener("resize", fitStage);
+fitStage();
 
-      canvas.style.width = w + "px";
-      canvas.style.height = h + "px";
-      canvas.width = Math.floor(w * DPR);
-      canvas.height = Math.floor(h * DPR);
+/* ===================== SETUP ===================== */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const drawCanvas = document.getElementById("draw");
+const drawCtx = drawCanvas.getContext("2d");
 
-      drawCanvas.style.width = w + "px";
-      drawCanvas.style.height = h + "px";
-      drawCanvas.width = Math.floor(w * DPR);
-      drawCanvas.height = Math.floor(h * DPR);
+canvas.width = STAGE_W;
+canvas.height = STAGE_H;
+drawCanvas.width = STAGE_W;
+drawCanvas.height = STAGE_H;
 
-      // mantém coordenadas em pixels reais da tela (não pixels internos)
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      drawCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+video.style.zIndex = 0;
+canvas.style.zIndex = 1;
+drawCanvas.style.zIndex = 2;
+
+drawCanvas.style.pointerEvents = "none";
+
+drawCtx.strokeStyle = "#FFFF00";
+drawCtx.lineWidth = 6;
+drawCtx.lineCap = "round";
+drawCtx.globalCompositeOperation = "source-over";
+
+/* ===================== ABSOLUTE CINEMA IMG ===================== */
+const absoluteCinemaImg = document.getElementById("absoluteCinema");
+
+function showAbsoluteCinema() {
+  absoluteCinemaImg.classList.add("show");
+}
+function hideAbsoluteCinema() {
+  absoluteCinemaImg.classList.remove("show");
+}
+
+/* ===================== HAND STATE ===================== */
+let Hands_State = [];
+
+/* ===================== BLOCO SYSTEM ===================== */
+const Blocks = [];
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+/* persistent hand state */
+const HandPersistent = {};
+
+function createBlock(text, x, y) {
+  const el = document.createElement("div");
+  el.className = "block";
+  el.innerText = text;
+  el.style.left = x + "px";
+  el.style.top = y + "px";
+  stage.appendChild(el);
+  Blocks.push({ el, grabbedByHandLabels: [] });
+}
+
+function handOverBlock(hand, block) {
+  const x = hand.fingerTip.x * STAGE_W;
+  const y = hand.fingerTip.y * STAGE_H;
+
+  const left = block.el.offsetLeft;
+  const top = block.el.offsetTop;
+  const right = left + block.el.offsetWidth;
+  const bottom = top + block.el.offsetHeight;
+
+  return x > left && x < right && y > top && y < bottom;
+}
+
+/* ===================== GESTURES ===================== */
+function pinch(hand) {
+  if (!hand.landmarks) return false;
+  const thumb = hand.landmarks[4];
+  const index = hand.landmarks[8];
+  const d = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+  return d < 0.06;
+}
+
+/* Dedo indicador apontando (você já tinha) */
+function isPointing(hand) {
+  if (!hand.landmarks) return false;
+  const lm = hand.landmarks;
+
+  const indexExtended = lm[8].y < lm[6].y - 0.02;
+  const middleFolded = lm[12].y > lm[10].y + 0.02;
+  const ringFolded = lm[16].y > lm[14].y + 0.02;
+  const pinkyFolded = lm[20].y > lm[18].y + 0.02;
+
+  const thumbTip = lm[4];
+  const thumbIp = lm[3];
+  const thumbFolded = Math.hypot(thumbTip.x - thumbIp.x, thumbTip.y - thumbIp.y) < 0.05;
+
+  return indexExtended && middleFolded && ringFolded && pinkyFolded && thumbFolded;
+}
+
+/* ===================== DETECTAR "MÃO ABERTA" ===================== */
+/*
+  Mão aberta = dedos estendidos
+  (thumb é meio chato, então a gente exige 4 dedos principais)
+*/
+function isHandOpen(hand) {
+  if (!hand.landmarks) return false;
+  const lm = hand.landmarks;
+
+  const indexOpen  = lm[8].y  < lm[6].y  - 0.02;
+  const middleOpen = lm[12].y < lm[10].y - 0.02;
+  const ringOpen   = lm[16].y < lm[14].y - 0.02;
+  const pinkyOpen  = lm[20].y < lm[18].y - 0.02;
+
+  return indexOpen && middleOpen && ringOpen && pinkyOpen;
+}
+
+/* ===================== ABSOLUTE CINEMA TRIGGER ===================== */
+let lastTriggerTime = 0;
+let cinemaVisible = false;
+
+function updateAbsoluteCinema() {
+  // precisa de 2 mãos detectadas
+  if (Hands_State.length < 2) {
+    if (cinemaVisible) {
+      hideAbsoluteCinema();
+      cinemaVisible = false;
     }
+    return;
+  }
 
-    window.addEventListener("resize", resizeCanvases);
-    resizeCanvases();
+  const openHands = Hands_State.filter(h => isHandOpen(h));
 
-    // stacking order
-    video.style.zIndex = 0;
-    canvas.style.zIndex = 1;
-    drawCanvas.style.zIndex = 10000;
-    drawCanvas.style.pointerEvents = "none";
+  // se as duas mãos estão abertas
+  const bothOpen = openHands.length >= 2;
 
-    drawCtx.strokeStyle = "#FFFF00";
-    drawCtx.lineWidth = 4;
-    drawCtx.lineCap = "round";
-    drawCtx.globalCompositeOperation = "source-over";
+  const now = Date.now();
+  const COOLDOWN_MS = 350; // evita piscar
 
-    /* ===================== HAND STATE ===================== */
-    let Hands_State = [];
-
-    /* ===================== BLOCO SYSTEM ===================== */
-    const Blocks = [];
-
-    function clamp(v, a, b) {
-      return Math.max(a, Math.min(b, v));
+  if (bothOpen) {
+    if (!cinemaVisible && (now - lastTriggerTime > COOLDOWN_MS)) {
+      showAbsoluteCinema();
+      cinemaVisible = true;
+      lastTriggerTime = now;
     }
-
-    /* persistent hand state */
-    const HandPersistent = {};
-
-    function createBlock(text, x, y) {
-      const el = document.createElement("div");
-      el.className = "block";
-      el.innerText = text;
-      el.style.left = x + "px";
-      el.style.top = y + "px";
-      document.body.appendChild(el);
-
-      Blocks.push({ el, grabbedByHandLabels: [] });
+  } else {
+    if (cinemaVisible && (now - lastTriggerTime > COOLDOWN_MS)) {
+      hideAbsoluteCinema();
+      cinemaVisible = false;
+      lastTriggerTime = now;
     }
+  }
+}
 
-    function handOverBlock(hand, block, W, H) {
-      const x = hand.fingerTip.x * W;
-      const y = hand.fingerTip.y * H;
+/* ===================== UPDATE BLOCKS ===================== */
+function updateBlocks() {
+  if (Hands_State.length === 0) return;
+  const MIN_SIZE = 60;
 
-      const left = block.el.offsetLeft;
-      const top = block.el.offsetTop;
-      const right = left + block.el.offsetWidth;
-      const bottom = top + block.el.offsetHeight;
+  for (let handIndex = 0; handIndex < Hands_State.length; handIndex++) {
+    const hand = Hands_State[handIndex];
+    if (!hand.landmarks) continue;
 
-      return x > left && x < right && y > top && y < bottom;
-    }
+    const x = hand.fingerTip.x * STAGE_W;
+    const y = hand.fingerTip.y * STAGE_H;
+    const isPinching = pinch(hand);
+    const label = hand.label;
 
-    /* ===================== GESTURES ===================== */
-    function pinch(hand) {
-      if (!hand.landmarks) return false;
+    const persistent = HandPersistent[label] || { disabled: false, pinchStart: null };
+    HandPersistent[label] = persistent;
 
-      const thumb = hand.landmarks[4];
-      const index = hand.landmarks[8];
-
-      const d = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-      return d < 0.06;
-    }
-
-    // detecta se apenas o dedo indicador esta estendido (apontar)
-    function isPointing(hand) {
-      if (!hand.landmarks) return false;
-      const lm = hand.landmarks;
-
-      const indexExtended = lm[8].y < lm[6].y - 0.02;
-      const middleFolded = lm[12].y > lm[10].y + 0.02;
-      const ringFolded = lm[16].y > lm[14].y + 0.02;
-      const pinkyFolded = lm[20].y > lm[18].y + 0.02;
-
-      const thumbTip = lm[4];
-      const thumbIp = lm[3];
-      const thumbFolded = Math.hypot(thumbTip.x - thumbIp.x, thumbTip.y - thumbIp.y) < 0.05;
-
-      return indexExtended && middleFolded && ringFolded && pinkyFolded && thumbFolded;
-    }
-
-    /* ===================== UPDATE BLOCKS ===================== */
-    function updateBlocks(W, H) {
-      if (Hands_State.length === 0) return;
-
-      const MIN_SIZE = 40;
-
-      for (let handIndex = 0; handIndex < Hands_State.length; handIndex++) {
-        const hand = Hands_State[handIndex];
-        if (!hand.landmarks) continue;
-
-        const x = hand.fingerTip.x * W;
-        const y = hand.fingerTip.y * H;
-        const isPinching = pinch(hand);
-        const label = hand.label;
-
-        // estado persistente por label (desligar se mantiver pinça por 5s)
-        const persistent = HandPersistent[label] || { disabled: false, pinchStart: null, isDrawing: false, last: null };
-        HandPersistent[label] = persistent;
-
-        if (!persistent.disabled) {
-          if (isPinching) {
-            if (!persistent.pinchStart) persistent.pinchStart = Date.now();
-            else if (Date.now() - persistent.pinchStart >= 5000) {
-              // desligar a mão
-              persistent.disabled = true;
-              persistent.pinchStart = null;
-
-              for (const b of Blocks) {
-                const idx = b.grabbedByHandLabels.indexOf(label);
-                if (idx !== -1) {
-                  b.grabbedByHandLabels.splice(idx, 1);
-                  if (b.grabbedByHandLabels.length === 0) {
-                    b.el.classList.remove("grabbed");
-                    b.el.style.zIndex = 1;
-                  }
-                }
+    if (!persistent.disabled) {
+      if (isPinching) {
+        if (!persistent.pinchStart) persistent.pinchStart = Date.now();
+        else if (Date.now() - persistent.pinchStart >= 5000) {
+          persistent.disabled = true;
+          persistent.pinchStart = null;
+          for (const b of Blocks) {
+            const idx = b.grabbedByHandLabels.indexOf(label);
+            if (idx !== -1) {
+              b.grabbedByHandLabels.splice(idx, 1);
+              if (b.grabbedByHandLabels.length === 0) {
+                b.el.classList.remove("grabbed");
+                b.el.style.zIndex = 1;
               }
-              continue;
-            }
-          } else {
-            persistent.pinchStart = null;
-          }
-        } else {
-          // reativa a mão assim que abrir a pinça
-          if (!isPinching) {
-            persistent.disabled = false;
-            persistent.pinchStart = null;
-          } else {
-            continue;
-          }
-        }
-
-        // encontrar bloco que está sendo segurado por esta mão
-        let myBlock = Blocks.find(b => b.grabbedByHandLabels.includes(label)) || null;
-
-        // desenho: se apenas o indicador estiver estendido -> desenhar
-        const pointing = isPointing(hand);
-
-        if (pointing && !persistent.disabled) {
-          const px = hand.fingerTip.x * W;
-          const py = hand.fingerTip.y * H;
-
-          if (!persistent.isDrawing) {
-            persistent.isDrawing = true;
-            persistent.last = { x: px, y: py };
-            drawCtx.beginPath();
-            drawCtx.moveTo(px, py);
-          } else {
-            drawCtx.lineTo(px, py);
-            drawCtx.stroke();
-            persistent.last = { x: px, y: py };
-          }
-        } else if (!pointing && persistent.isDrawing) {
-          persistent.isDrawing = false;
-          persistent.last = null;
-          drawCtx.closePath();
-        }
-
-        // pegar bloco (se estiver pinçando e não tiver bloco)
-        if (isPinching && !myBlock) {
-          for (const block of Blocks) {
-            if (handOverBlock(hand, block, W, H) && block.grabbedByHandLabels.length < 2) {
-              block.grabbedByHandLabels.push(label);
-              block.el.style.zIndex = 1000;
-              block.el.classList.add("grabbed");
-              myBlock = block;
-              break;
             }
           }
+          continue;
         }
+      } else {
+        persistent.pinchStart = null;
+      }
+    } else {
+      if (!isPinching) {
+        persistent.disabled = false;
+        persistent.pinchStart = null;
+      } else {
+        continue;
+      }
+    }
 
-        // se o bloco está sendo segurado por duas mãos -> redimensionar
-        if (myBlock && myBlock.grabbedByHandLabels.length === 2) {
-          const aLabel = myBlock.grabbedByHandLabels[0];
-          const bLabel = myBlock.grabbedByHandLabels[1];
+    let myBlock = Blocks.find(b => b.grabbedByHandLabels.includes(label)) || null;
 
-          const handA = Hands_State.find(h => h.label === aLabel);
-          const handB = Hands_State.find(h => h.label === bLabel);
+    const pointing = isPointing(hand);
+    const hp = HandPersistent[label] || { isDrawing: false, last: null, disabled: false, pinchStart: null };
+    HandPersistent[label] = hp;
 
-          if (handA && handB) {
-            const isPinchingA = pinch(handA);
-            const isPinchingB = pinch(handB);
+    if (pointing && !hp.disabled) {
+      const px = hand.fingerTip.x * STAGE_W;
+      const py = hand.fingerTip.y * STAGE_H;
 
-            if (isPinchingA && isPinchingB) {
-              const x1 = handA.fingerTip.x * W;
-              const y1 = handA.fingerTip.y * H;
-              const x2 = handB.fingerTip.x * W;
-              const y2 = handB.fingerTip.y * H;
+      if (!hp.isDrawing) {
+        hp.isDrawing = true;
+        hp.last = { x: px, y: py };
+        drawCtx.beginPath();
+        drawCtx.moveTo(px, py);
+      } else {
+        drawCtx.lineTo(px, py);
+        drawCtx.stroke();
+        hp.last = { x: px, y: py };
+      }
+    } else if (!pointing && hp.isDrawing) {
+      hp.isDrawing = false;
+      hp.last = null;
+      drawCtx.closePath();
+    }
 
-              let left = Math.min(x1, x2);
-              let top = Math.min(y1, y2);
-              let w = Math.max(Math.abs(x2 - x1), MIN_SIZE);
-              let h = Math.max(Math.abs(y2 - y1), MIN_SIZE);
-
-              left = clamp(left, 0, W - MIN_SIZE);
-              top = clamp(top, 0, H - MIN_SIZE);
-              w = clamp(w, MIN_SIZE, W - left);
-              h = clamp(h, MIN_SIZE, H - top);
-
-              myBlock.el.style.left = left + "px";
-              myBlock.el.style.top = top + "px";
-              myBlock.el.style.width = w + "px";
-              myBlock.el.style.height = h + "px";
-            }
-          }
-        } else if (myBlock && isPinching) {
-          // mover bloco
-          const bw = myBlock.el.offsetWidth;
-          const bh = myBlock.el.offsetHeight;
-
-          const nx = clamp(x - bw / 2, 0, W - bw);
-          const ny = clamp(y - bh / 2, 0, H - bh);
-
-          myBlock.el.style.left = nx + "px";
-          myBlock.el.style.top = ny + "px";
-        }
-
-        // soltar
-        if (!isPinching) {
-          const owned = Blocks.find(b => b.grabbedByHandLabels.includes(label));
-          if (owned) {
-            const idx = owned.grabbedByHandLabels.indexOf(label);
-            if (idx !== -1) owned.grabbedByHandLabels.splice(idx, 1);
-
-            if (owned.grabbedByHandLabels.length === 0) {
-              owned.el.style.zIndex = 1;
-              owned.el.classList.remove("grabbed");
-            }
-          }
+    if (isPinching && !myBlock) {
+      for (const block of Blocks) {
+        if (handOverBlock(hand, block) && block.grabbedByHandLabels.length < 2) {
+          block.grabbedByHandLabels.push(label);
+          block.el.style.zIndex = 1000;
+          block.el.classList.add("grabbed");
+          myBlock = block;
+          break;
         }
       }
     }
 
-    /* ===================== MEDIAPIPE ===================== */
-    const hands = new Hands({
-      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
+    if (myBlock && myBlock.grabbedByHandLabels.length === 2) {
+      const aLabel = myBlock.grabbedByHandLabels[0];
+      const bLabel = myBlock.grabbedByHandLabels[1];
+      const handA = Hands_State.find(h => h.label === aLabel);
+      const handB = Hands_State.find(h => h.label === bLabel);
 
-    hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7
-    });
+      if (handA && handB) {
+        const isPinchingA = pinch(handA);
+        const isPinchingB = pinch(handB);
 
-    hands.onResults(results => {
-      try {
-        const W = window.innerWidth;
-        const H = window.innerHeight;
+        if (isPinchingA && isPinchingB) {
+          const x1 = handA.fingerTip.x * STAGE_W;
+          const y1 = handA.fingerTip.y * STAGE_H;
+          const x2 = handB.fingerTip.x * STAGE_W;
+          const y2 = handB.fingerTip.y * STAGE_H;
 
-        Hands_State = [];
+          let left = Math.min(x1, x2);
+          let top = Math.min(y1, y2);
+          let w = Math.max(Math.abs(x2 - x1), MIN_SIZE);
+          let h = Math.max(Math.abs(y2 - y1), MIN_SIZE);
 
-        // desenha vídeo espelhado (sem criar array de landmarks)
-        if (results.image) {
-          ctx.save();
-          ctx.clearRect(0, 0, W, H);
+          left = clamp(left, 0, STAGE_W - MIN_SIZE);
+          top = clamp(top, 0, STAGE_H - MIN_SIZE);
+          w = clamp(w, MIN_SIZE, STAGE_W - left);
+          h = clamp(h, MIN_SIZE, STAGE_H - top);
 
-          ctx.translate(W, 0);
-          ctx.scale(-1, 1);
-          ctx.drawImage(results.image, 0, 0, W, H);
-
-          ctx.restore();
+          myBlock.el.style.left = left + "px";
+          myBlock.el.style.top = top + "px";
+          myBlock.el.style.width = w + "px";
+          myBlock.el.style.height = h + "px";
         }
-
-        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-          for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-            const landmarks = results.multiHandLandmarks[i];
-
-            const handedness = results.multiHandedness && results.multiHandedness[i];
-            const handLabel =
-              handedness && handedness.classification && handedness.classification[0]
-                ? handedness.classification[0].label
-                : (i === 0 ? "Left" : "Right");
-
-            // fingerTip já espelhada (pra bater com o vídeo espelhado)
-            const hand = {
-              label: handLabel,
-              landmarks: landmarks,
-              fingerTip: {
-                x: 1 - landmarks[8].x,
-                y: landmarks[8].y
-              }
-            };
-
-            Hands_State.push(hand);
-
-            // desenhar landmarks espelhados SEM criar array novo
-            ctx.save();
-            ctx.translate(W, 0);
-            ctx.scale(-1, 1);
-
-            drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: "#00FF00" });
-            drawLandmarks(ctx, landmarks, { color: "#FF0000", radius: 4 });
-
-            ctx.restore();
-          }
-
-          updateBlocks(W, H);
-        }
-      } catch (error) {
-        console.error("Erro no processamento de landmarks:", error);
       }
-    });
+    } else if (myBlock && isPinching) {
+      const bw = myBlock.el.offsetWidth;
+      const bh = myBlock.el.offsetHeight;
+      const nx = clamp(x - bw / 2, 0, STAGE_W - bw);
+      const ny = clamp(y - bh / 2, 0, STAGE_H - bh);
+      myBlock.el.style.left = nx + "px";
+      myBlock.el.style.top = ny + "px";
+    }
 
-    /* ===================== CAMERA ===================== */
-    let isProcessing = false;
-
-    const camera = new Camera(video, {
-      onFrame: async () => {
-        if (isProcessing) return;
-
-        isProcessing = true;
-        try {
-          const result = hands.send({ image: video });
-
-          if (result instanceof Promise) {
-            await Promise.race([
-              result,
-              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1000))
-            ]);
-          }
-        } catch (error) {
-          console.error("Erro ao enviar frame:", error);
-        } finally {
-          isProcessing = false;
+    if (!isPinching) {
+      const owned = Blocks.find(b => b.grabbedByHandLabels.includes(label));
+      if (owned) {
+        const idx = owned.grabbedByHandLabels.indexOf(label);
+        if (idx !== -1) owned.grabbedByHandLabels.splice(idx, 1);
+        if (owned.grabbedByHandLabels.length === 0) {
+          owned.el.style.zIndex = 1;
+          owned.el.classList.remove("grabbed");
         }
-      },
-      width: 640,
-      height: 480
-    });
+      }
+    }
+  }
+}
 
+/* ===================== MEDIAPIPE ===================== */
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7
+});
+
+hands.onResults(results => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (results.image) {
+    // espelhar imagem (modo selfie)
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  Hands_State = [];
+
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      const landmarks = results.multiHandLandmarks[i];
+      const handedness = results.multiHandedness && results.multiHandedness[i];
+
+      const handLabel = handedness?.classification?.[0]?.label || (i === 0 ? "Left" : "Right");
+
+      const hand = {
+        label: handLabel,
+        landmarks,
+        fingerTip: {
+          x: 1 - landmarks[8].x,
+          y: landmarks[8].y
+        }
+      };
+
+      Hands_State.push(hand);
+
+      const mirrored = landmarks.map(l => ({ x: 1 - l.x, y: l.y }));
+      drawConnectors(ctx, mirrored, HAND_CONNECTIONS, { color: "#00FF00" });
+      drawLandmarks(ctx, mirrored, { color: "#FF0000", radius: 4 });
+    }
+  }
+
+  // 🔥 AQUI: detecta as duas mãos abertas e mostra a imagem
+  updateAbsoluteCinema();
+
+  // continua funcionando os blocos
+  updateBlocks();
+});
+
+/* ===================== CAMERA ===================== */
+let isProcessing = false;
+
+const camera = new Camera(video, {
+  onFrame: async () => {
+    if (isProcessing) return;
+    isProcessing = true;
     try {
-      camera.start();
-    } catch (error) {
-      console.error("Erro ao iniciar câmera:", error);
-      alert("Erro ao acessar a câmera. Verifique as permissões.");
+      const p = hands.send({ image: video });
+      if (p instanceof Promise) {
+        await Promise.race([
+          p,
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1000))
+        ]);
+      }
+    } catch (e) {
+      console.error("Erro ao enviar frame:", e);
+    } finally {
+      isProcessing = false;
     }
+  },
+  width: 1280,
+  height: 720
+});
 
-    /* ===================== CREATE BLOCKS ===================== */
-    createBlock("Bloco A", 100, 100);
-    createBlock("Bloco B", 300, 100);
-    createBlock("Bloco C", 500, 100);
-  </script>
+camera.start().catch(err => {
+  console.error("Erro ao iniciar câmera:", err);
+  alert("Erro ao acessar a câmera. Verifique permissões do navegador.");
+});
+
+/* ===================== CREATE BLOCKS ===================== */
+createBlock("Bloco A", 140, 140);
+createBlock("Bloco B", 360, 140);
+createBlock("Bloco C", 580, 140);
+</script>
+
 </body>
 </html>
