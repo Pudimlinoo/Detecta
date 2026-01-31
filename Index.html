@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Detecção de Mão + Blocos</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+    }
+
+    .block {
+      position: absolute;
+      width: 100px;
+      height: 100px;
+      background: #3498db;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: white;
+      user-select: none;
+      cursor: grab;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      z-index: 3;
+    }
+
+    .block:hover {
+      transform: scale(1.05);
+      box-shadow: 0 6px 12px rgba(52, 152, 219, 0.5);
+    }
+
+    .block.grabbed {
+      cursor: grabbing;
+      box-shadow: 0 10px 20px rgba(52, 152, 219, 0.8);
+    }
+  </style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+<canvas id="draw"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/* ===================== SETUP ===================== */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const drawCanvas = document.getElementById("draw");
+const drawCtx = drawCanvas.getContext("2d");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+drawCanvas.width = window.innerWidth;
+drawCanvas.height = window.innerHeight;
+// stacking order
+video.style.zIndex = 0;
+canvas.style.zIndex = 1;
+drawCanvas.style.zIndex = 10000;
+drawCanvas.style.pointerEvents = 'none';
+
+drawCtx.strokeStyle = '#FFFF00';
+drawCtx.lineWidth = 4;
+drawCtx.lineCap = 'round';
+drawCtx.globalCompositeOperation = 'source-over';
+
+/* ===================== HAND STATE ===================== */
+let Hands_State = [];
+
+/* ===================== BLOCO SYSTEM ===================== */
+const Blocks = [];
+
+/* util */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+/* persistent hand state */
+const HandPersistent = {};
+
+function createBlock(text, x, y) {
+  const el = document.createElement("div");
+  el.className = "block";
+  el.innerText = text;
+  el.style.left = x + "px";
+  el.style.top = y + "px";
+  document.body.appendChild(el);
+
+  Blocks.push({ el, grabbedByHandLabels: [] });
+}
+
+function handOverBlock(hand, block) {
+    const x = hand.fingerTip.x * window.innerWidth;
+    const y = hand.fingerTip.y * window.innerHeight;
+
+  const left = block.el.offsetLeft;
+  const top = block.el.offsetTop;
+  const right = left + block.el.offsetWidth;
+  const bottom = top + block.el.offsetHeight;
+
+  return x > left && x < right && y > top && y < bottom;
+}
+
+/* ===================== GESTURES ===================== */
+function pinch(hand) {
+  if (!hand.landmarks) return false;
+
+  const thumb = hand.landmarks[4];
+  const index = hand.landmarks[8];
+
+  const d = Math.hypot(
+    thumb.x - index.x,
+    thumb.y - index.y
+  );
+
+  return d < 0.06;
+}
+
+// detecta se apenas o dedo indicador esta estendido (apontar)
+function isPointing(hand) {
+  if (!hand.landmarks) return false;
+  const lm = hand.landmarks;
+  // índices: 8=index tip, 6=index pip
+  // para outros dedos: tip 12/16/20, pip 10/14/18
+  const indexExtended = lm[8].y < lm[6].y - 0.02;
+  const middleFolded = lm[12].y > lm[10].y + 0.02;
+  const ringFolded = lm[16].y > lm[14].y + 0.02;
+  const pinkyFolded = lm[20].y > lm[18].y + 0.02;
+  // thumb: verificar distância entre tip e ip (aproximado)
+  const thumbTip = lm[4];
+  const thumbIp = lm[3];
+  const thumbFolded = Math.hypot(thumbTip.x - thumbIp.x, thumbTip.y - thumbIp.y) < 0.05;
+
+  return indexExtended && middleFolded && ringFolded && pinkyFolded && thumbFolded;
+}
+
+/* ===================== UPDATE BLOCKS ===================== */
+function updateBlocks() {
+  if (Hands_State.length === 0) return;
+
+  const MIN_SIZE = 40;
+
+  for (let handIndex = 0; handIndex < Hands_State.length; handIndex++) {
+    const hand = Hands_State[handIndex];
+    if (!hand.landmarks) continue;
+
+    const x = hand.fingerTip.x * window.innerWidth;
+    const y = hand.fingerTip.y * window.innerHeight;
+    const isPinching = pinch(hand);
+    const label = hand.label; // 'Left' or 'Right'
+
+    // estado persistente por label (desligar se mantiver pinça por 5s)
+    const persistent = HandPersistent[label] || { disabled: false, pinchStart: null };
+    HandPersistent[label] = persistent;
+
+    if (!persistent.disabled) {
+      if (isPinching) {
+        if (!persistent.pinchStart) persistent.pinchStart = Date.now();
+        else if (Date.now() - persistent.pinchStart >= 5000) {
+          // desligar a mao: remover label de qualquer bloco e marcar disabled
+          persistent.disabled = true;
+          persistent.pinchStart = null;
+          for (const b of Blocks) {
+            const idx = b.grabbedByHandLabels.indexOf(label);
+            if (idx !== -1) {
+              b.grabbedByHandLabels.splice(idx, 1);
+              if (b.grabbedByHandLabels.length === 0) {
+                b.el.classList.remove('grabbed');
+                b.el.style.zIndex = 1;
+              }
+            }
+          }
+          continue; // ignore this hand while disabled
+        }
+      } else {
+        persistent.pinchStart = null;
+      }
+    } else {
+      // reativa a mao assim que abrir a pinça
+      if (!isPinching) {
+        persistent.disabled = false;
+        persistent.pinchStart = null;
+      } else {
+        continue; // ainda desligada e ainda fechada
+      }
+    }
+
+    // encontrar bloco que esta sendo segurado por esta mao
+    let myBlock = Blocks.find(b => b.grabbedByHandLabels && b.grabbedByHandLabels.includes(label)) || null;
+
+    // desenho: se apenas o indicador estiver estendido -> desenhar
+    const pointing = isPointing(hand);
+    const hp = HandPersistent[label] || { isDrawing: false, last: null, disabled: false, pinchStart: null };
+    HandPersistent[label] = hp;
+
+    if (pointing && !hp.disabled) {
+      const px = hand.fingerTip.x * window.innerWidth;
+      const py = hand.fingerTip.y * window.innerHeight;
+      if (!hp.isDrawing) {
+        hp.isDrawing = true;
+        hp.last = { x: px, y: py };
+        drawCtx.beginPath();
+        drawCtx.moveTo(px, py);
+      } else {
+        drawCtx.lineTo(px, py);
+        drawCtx.stroke();
+        hp.last = { x: px, y: py };
+      }
+    } else if (!pointing && hp.isDrawing) {
+      hp.isDrawing = false;
+      hp.last = null;
+      drawCtx.closePath();
+    }
+
+    // pegar bloco (se estiver pinçando e nao tiver bloco)
+    if (isPinching && !myBlock) {
+      for (const block of Blocks) {
+        if (handOverBlock(hand, block) && block.grabbedByHandLabels.length < 2) {
+          block.grabbedByHandLabels.push(label);
+          block.el.style.zIndex = 1000;
+          block.el.classList.add("grabbed");
+          myBlock = block;
+          break;
+        }
+      }
+    }
+
+    // se o bloco esta sendo segurado por duas maos -> redimensionar
+    if (myBlock && myBlock.grabbedByHandLabels.length === 2) {
+      const aLabel = myBlock.grabbedByHandLabels[0];
+      const bLabel = myBlock.grabbedByHandLabels[1];
+      const handA = Hands_State.find(h => h.label === aLabel);
+      const handB = Hands_State.find(h => h.label === bLabel);
+      if (handA && handB) {
+        const isPinchingA = pinch(handA);
+        const isPinchingB = pinch(handB);
+        // só redimensiona se ambas as mãos estiverem em pinça
+        if (isPinchingA && isPinchingB) {
+            const x1 = handA.fingerTip.x * window.innerWidth;
+            const y1 = handA.fingerTip.y * window.innerHeight;
+            const x2 = handB.fingerTip.x * window.innerWidth;
+            const y2 = handB.fingerTip.y * window.innerHeight;
+
+          let left = Math.min(x1, x2);
+          let top = Math.min(y1, y2);
+          let w = Math.max(Math.abs(x2 - x1), MIN_SIZE);
+          let h = Math.max(Math.abs(y2 - y1), MIN_SIZE);
+
+          left = clamp(left, 0, window.innerWidth - MIN_SIZE);
+          top = clamp(top, 0, window.innerHeight - MIN_SIZE);
+          w = clamp(w, MIN_SIZE, window.innerWidth - left);
+          h = clamp(h, MIN_SIZE, window.innerHeight - top);
+
+          myBlock.el.style.left = left + "px";
+          myBlock.el.style.top = top + "px";
+          myBlock.el.style.width = w + "px";
+          myBlock.el.style.height = h + "px";
+        }
+      }
+
+    } else if (myBlock && isPinching) {
+      // mover bloco (com limites da tela)
+      const bw = myBlock.el.offsetWidth;
+      const bh = myBlock.el.offsetHeight;
+      const nx = clamp(x - bw / 2, 0, window.innerWidth - bw);
+      const ny = clamp(y - bh / 2, 0, window.innerHeight - bh);
+      myBlock.el.style.left = nx + "px";
+      myBlock.el.style.top = ny + "px";
+    }
+
+    // soltar (remover essa mao da lista do bloco quando abrir a mao)
+    if (!isPinching) {
+      // procurar bloque que esta com essa label (pode ser null de myBlock)
+      const owned = Blocks.find(b => b.grabbedByHandLabels.includes(label));
+      if (owned) {
+        const idx = owned.grabbedByHandLabels.indexOf(label);
+        if (idx !== -1) owned.grabbedByHandLabels.splice(idx, 1);
+        if (owned.grabbedByHandLabels.length === 0) {
+          owned.el.style.zIndex = 1;
+          owned.el.classList.remove("grabbed");
+        }
+      }
+    }
+  }
+}
+
+/* ===================== MEDIAPIPE ===================== */
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7
+});
+
+hands.onResults(results => {
+  try {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (results.image) {
+      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    }
+
+    Hands_State = [];
+
+    // draw mirrored image to match user's expectation
+    if (results.image) {
+      try {
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+      } finally {
+        ctx.restore();
+      }
+    }
+
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+        const landmarks = results.multiHandLandmarks[i];
+          const handedness = results.multiHandedness && results.multiHandedness[i];
+          const handLabel = handedness && handedness.classification && handedness.classification[0]
+            ? handedness.classification[0].label
+            : (i === 0 ? 'Left' : 'Right');
+
+          const hand = {
+            label: handLabel,
+            landmarks: landmarks,
+            // armazenar ponta do dedo já espelhada (coincide com o desenho espelhado)
+            fingerTip: {
+              x: 1 - landmarks[8].x,
+              y: landmarks[8].y
+            }
+          };
+
+        Hands_State.push(hand);
+
+        // draw landmarks on top of mirrored image (landmarks need mirrored x)
+        const mirrored = landmarks.map(l => ({ x: 1 - l.x, y: l.y }));
+        drawConnectors(ctx, mirrored, HAND_CONNECTIONS, { color: "#00FF00" });
+        drawLandmarks(ctx, mirrored, { color: "#FF0000", radius: 4 });
+      }
+
+      updateBlocks();
+    }
+  } catch (error) {
+    console.error("Erro no processamento de landmarks:", error);
+  }
+});
+
+/* ===================== CAMERA ===================== */
+let isProcessing = false;
+
+const camera = new Camera(video, {
+  onFrame: async () => {
+    if (!isProcessing) {
+      isProcessing = true;
+      try {
+        const result = hands.send({ image: video });
+        if (result instanceof Promise) {
+          await Promise.race([
+            result,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1000))
+          ]);
+        }
+      } catch (error) {
+        console.error("Erro ao enviar frame:", error);
+      } finally {
+        isProcessing = false;
+      }
+    }
+  },
+  width: 640,
+  height: 480
+});
+
+try {
+  camera.start();
+} catch (error) {
+  console.error("Erro ao iniciar câmera:", error);
+  alert("Erro ao acessar a câmera. Verifique as permissões.");
+}
+
+/* ===================== CREATE BLOCKS ===================== */
+createBlock("Bloco A", 100, 100);
+createBlock("Bloco B", 300, 100);
+createBlock("Bloco C", 500, 100);
+</script>
+
+</body>
+</html>
