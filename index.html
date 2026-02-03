@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>HandCam 1080p</title>
+  <title>HandCam</title>
+
   <style>
     html, body {
       margin: 0;
@@ -12,9 +13,9 @@
       background: black;
       width: 100%;
       height: 100%;
+      font-family: Arial, Helvetica, sans-serif;
     }
 
-    /* Área fixa 1080p (ótimo pro OBS) */
     #stage {
       position: relative;
       width: 1920px;
@@ -32,36 +33,104 @@
 
     .block {
       position: absolute;
-      width: 140px;
-      height: 140px;
-      background: #3498db;
-      border-radius: 14px;
+      width: 180px;
+      height: 180px;
+      border-radius: 18px;
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       justify-content: center;
       font-weight: bold;
       color: white;
       user-select: none;
       cursor: grab;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
       z-index: 3;
-      font-size: 22px;
+      font-size: 18px;
+      transform-origin: center center;
+      will-change: transform, left, top, width, height;
+
+      /* sombra */
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+
+      /* textura */
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+
+      /* deixa bonito em qualquer textura */
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.12);
     }
 
-    .block:hover {
-      transform: scale(1.03);
-      box-shadow: 0 14px 35px rgba(52, 152, 219, 0.55);
+    .block::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.55), rgba(0,0,0,0.05));
+      pointer-events: none;
+    }
+
+    .block span {
+      position: relative;
+      z-index: 2;
+      padding: 10px 12px;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+      opacity: 0.95;
     }
 
     .block.grabbed {
       cursor: grabbing;
-      box-shadow: 0 18px 45px rgba(52, 152, 219, 0.8);
+      box-shadow: 0 18px 45px rgba(0, 255, 170, 0.35);
+      border-color: rgba(0,255,170,0.35);
+    }
+
+    #hud {
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      z-index: 9999;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: white;
+      font-size: 13px;
+      line-height: 1.35;
+      width: 520px;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    #hud b { color: #00ff99; }
+    #hud .small { opacity: 0.85; font-size: 12px; }
+    #hud .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.06);
+      margin: 4px 4px 0 0;
+      font-size: 12px;
     }
   </style>
 </head>
 <body>
 
 <div id="stage">
+  <div id="hud">
+    <div><b>HandCam</b> <span class="small"></span></div>
+    <div class="small" style="margin-top:6px;">
+      <span class="pill">1 dedo = desenhar</span>
+      <span class="pill">2 dedos = borracha</span>
+      <span class="pill">pinch 1 mão = mover</span>
+      <span class="pill">pinch 2 mãos = esticar livre</span>
+      <span class="pill">3 dedos = toggle giro</span>
+      <span class="pill">giro ON = rotaciona (não estica)</span>
+    </div>
+    <div class="small" style="margin-top:8px;">
+      Estado: <b id="modeState">...</b>
+    </div>
+  </div>
+
   <video id="video" autoplay playsinline></video>
   <canvas id="canvas"></canvas>
   <canvas id="draw"></canvas>
@@ -77,8 +146,6 @@ const STAGE_W = 1920;
 const STAGE_H = 1080;
 
 const stage = document.getElementById("stage");
-
-/* Auto scale para caber em qualquer monitor (mas mantém 1080p internamente) */
 function fitStage() {
   const sx = window.innerWidth / STAGE_W;
   const sy = window.innerHeight / STAGE_H;
@@ -88,7 +155,7 @@ function fitStage() {
 window.addEventListener("resize", fitStage);
 fitStage();
 
-/* ===================== SETUP ===================== */
+/* ===================== CANVAS SETUP ===================== */
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -104,36 +171,99 @@ video.style.zIndex = 0;
 canvas.style.zIndex = 1;
 drawCanvas.style.zIndex = 2;
 
-drawCanvas.style.pointerEvents = "none";
-
+/* desenho */
 drawCtx.strokeStyle = "#FFFF00";
-drawCtx.lineWidth = 6;
+drawCtx.lineWidth = 7;
 drawCtx.lineCap = "round";
+drawCtx.lineJoin = "round";
 drawCtx.globalCompositeOperation = "source-over";
+
+/* ===================== HUD ===================== */
+const modeStateEl = document.getElementById("modeState");
+
+/* ===================== CONFIG ===================== */
+const CFG = {
+  fingerSmooth: 0.38,
+  rotSmooth: 0.22,      // um pouco mais suave
+  sizeSmooth: 0.28,
+  pinchDist: 0.060,
+  minSize: 70,
+  maxSize: 1200,
+
+  eraseRadius: 55,
+  drawMinMove: 2.2,
+};
+
+let rotateEnabled = true;
+let lastRotateToggleTime = 0;
+const ROTATE_TOGGLE_COOLDOWN = 800;
+
+/* ===================== HELPERS ===================== */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function angle(a, b) { return Math.atan2(b.y - a.y, b.x - a.x); }
+
+function smoothPoint(prev, next, t) {
+  if (!prev) return { x: next.x, y: next.y };
+  return { x: lerp(prev.x, next.x, t), y: lerp(prev.y, next.y, t) };
+}
+
+function isFingerExtended(lm, tipIdx, pipIdx, margin=0.02) {
+  return lm[tipIdx].y < lm[pipIdx].y - margin;
+}
+
+// normaliza delta de ângulo pra nunca dar "pulo" (giro 360 contínuo)
+function normalizeAngleDelta(d) {
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
 
 /* ===================== HAND STATE ===================== */
 let Hands_State = [];
+const HandPersistent = {};
 
 /* ===================== BLOCO SYSTEM ===================== */
 const Blocks = [];
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-/* persistent hand state */
-const HandPersistent = {};
+/* TEXTURAS: você pode trocar por imagens suas */
+const TEXTURES = [
+  "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBwgHBw0HBw0HBwcHBw0HBwcHBw8IDQcNFREWFhURExMYHSggGCYxJxMTITEhJSkrLi4uFx8zODMsNygtLisBCgoKDQ0NDw0NDzcZFRkrNys3Nys3LTcrLSsrLTctKysrKy0tKysrKysrKysrKysrKysrKysrKysrKysrKysrK//AABEIAOEA4QMBIgACEQEDEQH/xAAYAAEBAQEBAAAAAAAAAAAAAAACAQADBv/EABYQAQEBAAAAAAAAAAAAAAAAAAABEf/EABkBAQEBAQEBAAAAAAAAAAAAAAEAAgMHBv/EABYRAQEBAAAAAAAAAAAAAAAAAAABEf/aAAwDAQACEQMRAD8A9ozM8vfTMzMkzLioIrYuAJi4uLiGji4uLiWjjYWLiGhjYeJiWjjFjYjoYmHiYlo4hYmIohISjMyLMzJMzMkzMyTKyxBlbFwBlxZFkDOpi4si4hqY2Fi4ho42FjYBo42FjYloY2HiYToYmHiYjoYmHiWI6GIWIWhQkpKMzIszMkyxCiDLGiwBYsjQpAzUkKRpCkTOpi4shYNZ0cXCxcGjRxsLFxDQxsPExLQxMdMTEdDBsdLEsOnXOxLDsTC1rnUp2DU0FQ6NLQ1CqEozMisWNFgZWFEhRM1pCkaQpAza0hSNIUjLFqSFiyLIGbUxcKRcA0cbCxcQ0MbDxsS1zxMdMTEdc8Sw7EsJ1zsGx0sGwtShYNOwbGm5Qo06NTUGjTo0tCysSsKJCgZqwokKBmrCkSHBWKsKRIUjLGtIUjSFIGbWkXFkWQM6mNhYuIaGNh4mJaGJYeJiUrnYljpYNhblc7Bp2DS1AsCulGtRuOdGnRpbgVKVGlqIisisODCiFKFBhwMVYcGHGWKsODDjLFWFEhQMVZFkaFAwmLi4uAaONhYmJaODYdiUnXOjXShS1Ao06FLpAo06FaagUadGtOkCjSo0tRGZk0sKDCgZpwoMKBinCgwoGKcKDDjLFKFBhwMVYUSFGWKsi40WJlEwkqQ0aVGpqDQp0a01AoU6FLpBoU6FLcCjToVpuDQp0aW4LKxLQ4EKAU4UGFAxThQYUDFOHAhxlilDgQoHOnCgwoyzSijFTKpWSpJRpUamoNGlQrTUGhToUukGhToVpuDQpUaW4NGlQpbjMjErCgwolShwIUDFOHHOHGWKcOOcOMsU4UCFAxXSLAlLQxT1tHW0DC1tHW1LFtGto2ktRrUaWolGrRpdINGrRrTUGjVo1p0g0aVGlqIzMi0KDFiVOFAhQM04cCFBWKcKBKUrLFOU5XOUpQzYcpSueroYx01tDV1DC1tHU1LC0dbRtRxbRta0bS1I1CraNLciUatGtRuDRq0aW4lGrUpaiMzItFgxYkcKBCgZpylKEpRM2HKUrnKUrLFjpKUrnKsoZx0lXQ1tAx01tDW1DD1tDW1LC1LR1tRxbRtS1NJxrRta1LS1IlG1bRpbkSjVo0tRqNWjS0zIxKxYKpFCgRQycKUFlAx0lWUJVlTNjpKsrnpaMZw9XQ1tDOOmtoa2hYetoa2lYWpqampYtqWpqacaxrUtS1LSZGtGtalqbkajVo0mNUapS0zMyLMzJKoqgULQUA5VlBdDOHKuhq6hh6uhq6hhauhraBh6mjralhampqaTi6mpqaji2pampqOLampahLIyFpmZkWZmSZmZJmZklUVQJtFdALV0dbUMPW0dbUMPW0NXQsLW0dTUsLW0dbSsXU1NbUcXUTURVGQlmZkWZmSZmZJmZkmZmSZozJMrMgsZmAWMzJMrMgyVmSZmZJGrMiiMxLVmZFmZkmZmSZmZJ//Z",
+  "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBwgIBwcIBwcHBwcHBwoHBwcHBw8ICQcWFREWFhUREx8YHSggGBolGx8fITEhJSkrLi4uFx8zODMsNygtLisBCgoKDQ0NDw0NDysZFRktKzctKy0rLSs3NystKzc3KysrKystKysrKystLSsrKysrKysrKysrKysrKysrKysrK//AABEIALcBEwMBIgACEQEDEQH/xAAXAAEBAQEAAAAAAAAAAAAAAAAAAQIH/8QAFhABAQEAAAAAAAAAAAAAAAAAAAER/8QAGAEBAQEBAQAAAAAAAAAAAAAAAAECBQP/xAAWEQEBAQAAAAAAAAAAAAAAAAAAARH/2gAMAwEAAhEDEQA/AOQRUiu08FIEaiLAg1BYsRWxYEGoixUVqAqRW4ikFagAKCLQERUrNEoqM0RFRiqIqM0RFRmqIqMgioxVAEEipFBSIsaiLAg1BVSK3BYEGoiqkVqBFRWoigNigKAIAlVGQQozREVGKoiozREVGaoioyCKjFUAQRUUBYkVoWANIsWINQVUVqILEVsVUGkVUF0U1BRRA0ARKAIzQQGapUCs0RFqMVRFqVmggMqAIIqEQVUVoFRY0gqK1BVjKtQUBuIqsqooCooguioBoAiACMqAiUEVKyogMUEBKJQGaqAIIqKkFIDQqoRYigNCqg1BVQaFAXUUQXRRBRRAFQE0ARNFQRlQEZtAEQEVGaolVGQATVRUGYKqEbRVQUVUVqIKgoqoNaKIqiiC6iiBoogaKIGqAiACJaADIIDIgCKgIzQAZVFQQVUVqCiK0iiCiqg0igKKILooiroogaKgGgIGioCaAIgqAyCAiiAloIDFUEEAAFEVRRFWVFEVoFQXRRFXUUQXRRFUAAAAARBUA0ARNUATQQE0EBmqIDIAAAAAAoiqKILoqoNaiiKAqCiiBooguiiBooggAACCACJoqAzaogIAAAAAAAAAACoAoirooguooiroogCiCiiAKgJoAhoqAmqAiAAgAAAAAAAAAAAAAAAAKgCiAKIuroAGgBpoCaAoggAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//2Q==",
+  "data:image/jpeg;base64,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"
+];
 
-function createBlock(text, x, y) {
+function createBlock(text, x, y, textureUrl) {
   const el = document.createElement("div");
   el.className = "block";
-  el.innerText = text;
   el.style.left = x + "px";
   el.style.top = y + "px";
+
+  el.dataset.rot = "0";
+
+  // textura
+  el.style.backgroundImage = `url('${textureUrl}')`;
+
+  const label = document.createElement("span");
+  label.textContent = text;
+  el.appendChild(label);
+
   stage.appendChild(el);
-  Blocks.push({ el, grabbedByHandLabels: [] });
+
+  Blocks.push({
+    el,
+    grabbedBy: [],
+    last2Hand: null,
+
+    // rotação 360 contínua:
+    lastAng: null,       // ângulo anterior entre as mãos
+    rotAccumDeg: 0,      // rotação acumulada em graus
+  });
 }
 
 function handOverBlock(hand, block) {
-  const x = hand.fingerTip.x * STAGE_W;
-  const y = hand.fingerTip.y * STAGE_H;
+  const x = hand.tip.x;
+  const y = hand.tip.y;
 
   const left = block.el.offsetLeft;
   const top = block.el.offsetTop;
@@ -145,165 +275,222 @@ function handOverBlock(hand, block) {
 
 /* ===================== GESTURES ===================== */
 function pinch(hand) {
-  if (!hand.landmarks) return false;
-  const thumb = hand.landmarks[4];
-  const index = hand.landmarks[8];
+  const lm = hand.landmarks;
+  if (!lm) return false;
+  const thumb = lm[4];
+  const index = lm[8];
   const d = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-  return d < 0.06;
+  return d < CFG.pinchDist;
 }
 
-function isPointing(hand) {
-  if (!hand.landmarks) return false;
+function isOneFingerDraw(hand) {
   const lm = hand.landmarks;
+  if (!lm) return false;
 
-  const indexExtended = lm[8].y < lm[6].y - 0.02;
-  const middleFolded = lm[12].y > lm[10].y + 0.02;
-  const ringFolded = lm[16].y > lm[14].y + 0.02;
-  const pinkyFolded = lm[20].y > lm[18].y + 0.02;
+  const indexUp = isFingerExtended(lm, 8, 6, 0.015);
+  const middleUp = isFingerExtended(lm, 12, 10, 0.015);
+  const ringUp = isFingerExtended(lm, 16, 14, 0.015);
+  const pinkyUp = isFingerExtended(lm, 20, 18, 0.015);
 
-  const thumbTip = lm[4];
-  const thumbIp = lm[3];
-  const thumbFolded = Math.hypot(thumbTip.x - thumbIp.x, thumbTip.y - thumbIp.y) < 0.05;
+  return indexUp && !middleUp && !ringUp && !pinkyUp;
+}
 
-  return indexExtended && middleFolded && ringFolded && pinkyFolded && thumbFolded;
+function isTwoFingerErase(hand) {
+  const lm = hand.landmarks;
+  if (!lm) return false;
+
+  const indexUp = isFingerExtended(lm, 8, 6, 0.015);
+  const middleUp = isFingerExtended(lm, 12, 10, 0.015);
+  const ringUp = isFingerExtended(lm, 16, 14, 0.015);
+  const pinkyUp = isFingerExtended(lm, 20, 18, 0.015);
+
+  return indexUp && middleUp && !ringUp && !pinkyUp;
+}
+
+function isThreeFingerToggleRotate(hand) {
+  const lm = hand.landmarks;
+  if (!lm) return false;
+
+  const indexUp  = isFingerExtended(lm, 8, 6, 0.015);
+  const middleUp = isFingerExtended(lm, 12, 10, 0.015);
+  const ringUp   = isFingerExtended(lm, 16, 14, 0.015);
+  const pinkyUp  = isFingerExtended(lm, 20, 18, 0.015);
+
+  return indexUp && middleUp && ringUp && !pinkyUp;
+}
+
+/* ===================== DRAW / ERASE ===================== */
+function drawLineSmooth(hand, hp) {
+  const p = hand.tip;
+
+  if (!hp.lastDraw) {
+    hp.lastDraw = { x: p.x, y: p.y };
+    drawCtx.beginPath();
+    drawCtx.moveTo(p.x, p.y);
+    return;
+  }
+
+  const d = Math.hypot(p.x - hp.lastDraw.x, p.y - hp.lastDraw.y);
+  if (d < CFG.drawMinMove) return;
+
+  drawCtx.lineTo(p.x, p.y);
+  drawCtx.stroke();
+  hp.lastDraw = { x: p.x, y: p.y };
+}
+
+function eraseAtPoint(p) {
+  drawCtx.save();
+  drawCtx.globalCompositeOperation = "destination-out";
+  drawCtx.beginPath();
+  drawCtx.arc(p.x, p.y, CFG.eraseRadius, 0, Math.PI * 2);
+  drawCtx.fill();
+  drawCtx.restore();
 }
 
 /* ===================== UPDATE BLOCKS ===================== */
 function updateBlocks() {
   if (Hands_State.length === 0) return;
-  const MIN_SIZE = 60;
 
-  for (let handIndex = 0; handIndex < Hands_State.length; handIndex++) {
-    const hand = Hands_State[handIndex];
-    if (!hand.landmarks) continue;
-
-    const x = hand.fingerTip.x * STAGE_W;
-    const y = hand.fingerTip.y * STAGE_H;
-    const isPinching = pinch(hand);
+  // 1) pegar/mover com 1 mão
+  for (const hand of Hands_State) {
     const label = hand.label;
+    const isPinching = pinch(hand);
 
-    const persistent = HandPersistent[label] || { disabled: false, pinchStart: null };
-    HandPersistent[label] = persistent;
-
-    if (!persistent.disabled) {
-      if (isPinching) {
-        if (!persistent.pinchStart) persistent.pinchStart = Date.now();
-        else if (Date.now() - persistent.pinchStart >= 5000) {
-          persistent.disabled = true;
-          persistent.pinchStart = null;
-          for (const b of Blocks) {
-            const idx = b.grabbedByHandLabels.indexOf(label);
-            if (idx !== -1) {
-              b.grabbedByHandLabels.splice(idx, 1);
-              if (b.grabbedByHandLabels.length === 0) {
-                b.el.classList.remove("grabbed");
-                b.el.style.zIndex = 1;
-              }
-            }
-          }
-          continue;
-        }
-      } else {
-        persistent.pinchStart = null;
-      }
-    } else {
-      if (!isPinching) {
-        persistent.disabled = false;
-        persistent.pinchStart = null;
-      } else {
-        continue;
-      }
-    }
-
-    let myBlock = Blocks.find(b => b.grabbedByHandLabels.includes(label)) || null;
-
-    const pointing = isPointing(hand);
-    const hp = HandPersistent[label] || { isDrawing: false, last: null, disabled: false, pinchStart: null };
+    const hp = HandPersistent[label] || { smTip: null, lastDraw: null };
     HandPersistent[label] = hp;
 
-    if (pointing && !hp.disabled) {
-      const px = hand.fingerTip.x * STAGE_W;
-      const py = hand.fingerTip.y * STAGE_H;
+    hp.smTip = smoothPoint(hp.smTip, hand.tip, CFG.fingerSmooth);
+    hand.tip = hp.smTip;
 
-      if (!hp.isDrawing) {
-        hp.isDrawing = true;
-        hp.last = { x: px, y: py };
-        drawCtx.beginPath();
-        drawCtx.moveTo(px, py);
-      } else {
-        drawCtx.lineTo(px, py);
-        drawCtx.stroke();
-        hp.last = { x: px, y: py };
-      }
-    } else if (!pointing && hp.isDrawing) {
-      hp.isDrawing = false;
-      hp.last = null;
-      drawCtx.closePath();
-    }
+    let myBlock = Blocks.find(b => b.grabbedBy.includes(label)) || null;
 
+    // pegar bloco
     if (isPinching && !myBlock) {
       for (const block of Blocks) {
-        if (handOverBlock(hand, block) && block.grabbedByHandLabels.length < 2) {
-          block.grabbedByHandLabels.push(label);
-          block.el.style.zIndex = 1000;
+        if (handOverBlock(hand, block) && block.grabbedBy.length < 2) {
+          block.grabbedBy.push(label);
           block.el.classList.add("grabbed");
+          block.el.style.zIndex = 1000;
           myBlock = block;
           break;
         }
       }
     }
 
-    if (myBlock && myBlock.grabbedByHandLabels.length === 2) {
-      const aLabel = myBlock.grabbedByHandLabels[0];
-      const bLabel = myBlock.grabbedByHandLabels[1];
-      const handA = Hands_State.find(h => h.label === aLabel);
-      const handB = Hands_State.find(h => h.label === bLabel);
-
-      if (handA && handB) {
-        const isPinchingA = pinch(handA);
-        const isPinchingB = pinch(handB);
-
-        if (isPinchingA && isPinchingB) {
-          const x1 = handA.fingerTip.x * STAGE_W;
-          const y1 = handA.fingerTip.y * STAGE_H;
-          const x2 = handB.fingerTip.x * STAGE_W;
-          const y2 = handB.fingerTip.y * STAGE_H;
-
-          let left = Math.min(x1, x2);
-          let top = Math.min(y1, y2);
-          let w = Math.max(Math.abs(x2 - x1), MIN_SIZE);
-          let h = Math.max(Math.abs(y2 - y1), MIN_SIZE);
-
-          left = clamp(left, 0, STAGE_W - MIN_SIZE);
-          top = clamp(top, 0, STAGE_H - MIN_SIZE);
-          w = clamp(w, MIN_SIZE, STAGE_W - left);
-          h = clamp(h, MIN_SIZE, STAGE_H - top);
-
-          myBlock.el.style.left = left + "px";
-          myBlock.el.style.top = top + "px";
-          myBlock.el.style.width = w + "px";
-          myBlock.el.style.height = h + "px";
-        }
-      }
-    } else if (myBlock && isPinching) {
+    // mover (1 mão)
+    if (myBlock && isPinching && myBlock.grabbedBy.length === 1) {
       const bw = myBlock.el.offsetWidth;
       const bh = myBlock.el.offsetHeight;
-      const nx = clamp(x - bw / 2, 0, STAGE_W - bw);
-      const ny = clamp(y - bh / 2, 0, STAGE_H - bh);
+
+      const nx = clamp(hand.tip.x - bw / 2, 0, STAGE_W - bw);
+      const ny = clamp(hand.tip.y - bh / 2, 0, STAGE_H - bh);
+
       myBlock.el.style.left = nx + "px";
       myBlock.el.style.top = ny + "px";
     }
 
+    // soltar
     if (!isPinching) {
-      const owned = Blocks.find(b => b.grabbedByHandLabels.includes(label));
+      const owned = Blocks.find(b => b.grabbedBy.includes(label));
       if (owned) {
-        const idx = owned.grabbedByHandLabels.indexOf(label);
-        if (idx !== -1) owned.grabbedByHandLabels.splice(idx, 1);
-        if (owned.grabbedByHandLabels.length === 0) {
-          owned.el.style.zIndex = 1;
+        const idx = owned.grabbedBy.indexOf(label);
+        if (idx !== -1) owned.grabbedBy.splice(idx, 1);
+
+        if (owned.grabbedBy.length === 0) {
           owned.el.classList.remove("grabbed");
+          owned.el.style.zIndex = 3;
+
+          owned.last2Hand = null;
+          owned.lastAng = null; // reseta rotação contínua
         }
       }
+    }
+  }
+
+  // 2) 2 mãos: ou ESTICA (giro OFF) ou ROTACIONA (giro ON)
+  for (const block of Blocks) {
+    if (block.grabbedBy.length !== 2) continue;
+
+    const aLabel = block.grabbedBy[0];
+    const bLabel = block.grabbedBy[1];
+
+    const handA = Hands_State.find(h => h.label === aLabel);
+    const handB = Hands_State.find(h => h.label === bLabel);
+    if (!handA || !handB) continue;
+
+    const pinA = pinch(handA);
+    const pinB = pinch(handB);
+    if (!pinA || !pinB) continue;
+
+    const p1 = handA.tip;
+    const p2 = handB.tip;
+
+    const curLeft = block.el.offsetLeft;
+    const curTop = block.el.offsetTop;
+    const curW = block.el.offsetWidth;
+    const curH = block.el.offsetHeight;
+
+    // ====== MODO ESTICAR (giro OFF) ======
+    if (!rotateEnabled) {
+      let left = Math.min(p1.x, p2.x);
+      let top = Math.min(p1.y, p2.y);
+      let w = Math.abs(p2.x - p1.x);
+      let h = Math.abs(p2.y - p1.y);
+
+      w = clamp(w, CFG.minSize, CFG.maxSize);
+      h = clamp(h, CFG.minSize, CFG.maxSize);
+
+      left = clamp(left, 0, STAGE_W - w);
+      top = clamp(top, 0, STAGE_H - h);
+
+      const smLeft = lerp(curLeft, left, CFG.sizeSmooth);
+      const smTop  = lerp(curTop, top, CFG.sizeSmooth);
+      const smW    = lerp(curW, w, CFG.sizeSmooth);
+      const smH    = lerp(curH, h, CFG.sizeSmooth);
+
+      block.el.style.left = smLeft + "px";
+      block.el.style.top = smTop + "px";
+      block.el.style.width = smW + "px";
+      block.el.style.height = smH + "px";
+
+      // não rotaciona enquanto giro OFF
+      block.lastAng = null;
+      const curRot = block.rotAccumDeg;
+      block.el.style.transform = `rotate(${curRot}deg)`;
+    }
+
+    // ====== MODO GIRO (giro ON) ======
+    if (rotateEnabled) {
+      // quando giro ON: NÃO estica, só centraliza + rotaciona 360 contínuo
+      const cx = (p1.x + p2.x) / 2;
+      const cy = (p1.y + p2.y) / 2;
+
+      const bw = block.el.offsetWidth;
+      const bh = block.el.offsetHeight;
+
+      block.el.style.left = clamp(cx - bw / 2, 0, STAGE_W - bw) + "px";
+      block.el.style.top  = clamp(cy - bh / 2, 0, STAGE_H - bh) + "px";
+
+      const nowAng = angle(p1, p2);
+
+      if (block.lastAng === null) {
+        block.lastAng = nowAng;
+      } else {
+        let d = nowAng - block.lastAng;
+        d = normalizeAngleDelta(d); // aqui é o segredo do giro 360 certinho
+
+        const deltaDeg = d * 180 / Math.PI;
+        block.rotAccumDeg += deltaDeg;
+        block.lastAng = nowAng;
+      }
+
+      // suaviza visualmente (sem perder o 360)
+      const curVisualRot = parseFloat(block.el.dataset.rot || "0");
+      const targetRot = block.rotAccumDeg;
+      const smRot = lerp(curVisualRot, targetRot, CFG.rotSmooth);
+
+      block.el.dataset.rot = String(smRot);
+      block.el.style.transform = `rotate(${smRot}deg)`;
     }
   }
 }
@@ -316,15 +503,14 @@ const hands = new Hands({
 hands.setOptions({
   maxNumHands: 2,
   modelComplexity: 1,
-  minDetectionConfidence: 0.7,
-  minTrackingConfidence: 0.7
+  minDetectionConfidence: 0.78,
+  minTrackingConfidence: 0.78
 });
 
 hands.onResults(results => {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (results.image) {
-    // espelhar imagem (modo selfie)
     ctx.save();
     ctx.translate(canvas.width, 0);
     ctx.scale(-1, 1);
@@ -338,27 +524,65 @@ hands.onResults(results => {
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
       const landmarks = results.multiHandLandmarks[i];
       const handedness = results.multiHandedness && results.multiHandedness[i];
-
       const handLabel = handedness?.classification?.[0]?.label || (i === 0 ? "Left" : "Right");
 
-      const hand = {
-        label: handLabel,
-        landmarks,
-        fingerTip: {
-          x: 1 - landmarks[8].x,
-          y: landmarks[8].y
-        }
+      const tip = {
+        x: (1 - landmarks[8].x) * STAGE_W,
+        y: landmarks[8].y * STAGE_H
       };
 
-      Hands_State.push(hand);
+      Hands_State.push({ label: handLabel, landmarks, tip });
 
       const mirrored = landmarks.map(l => ({ x: 1 - l.x, y: l.y }));
       drawConnectors(ctx, mirrored, HAND_CONNECTIONS, { color: "#00FF00" });
       drawLandmarks(ctx, mirrored, { color: "#FF0000", radius: 4 });
     }
-
-    updateBlocks();
   }
+
+  // ======== TOGGLE GIRO (3 dedos) =========
+  const now = Date.now();
+  for (const hand of Hands_State) {
+    if (isThreeFingerToggleRotate(hand)) {
+      if (now - lastRotateToggleTime > ROTATE_TOGGLE_COOLDOWN) {
+        rotateEnabled = !rotateEnabled;
+        lastRotateToggleTime = now;
+
+        // reseta refs pra não dar pulo
+        for (const b of Blocks) {
+          b.last2Hand = null;
+          b.lastAng = null;
+          b.el.dataset.rot = String(b.rotAccumDeg || 0);
+        }
+      }
+    }
+  }
+
+  // ======== DESENHO / BORRACHA =========
+  let hudText = "IDLE";
+
+  for (const hand of Hands_State) {
+    const label = hand.label;
+    const hp = HandPersistent[label] || { lastDraw: null, smTip: null };
+    HandPersistent[label] = hp;
+
+    hp.smTip = smoothPoint(hp.smTip, hand.tip, CFG.fingerSmooth);
+    hand.tip = hp.smTip;
+
+    if (isTwoFingerErase(hand)) {
+      hudText = "ERASER";
+      eraseAtPoint(hand.tip);
+      hp.lastDraw = null;
+    } else if (isOneFingerDraw(hand)) {
+      hudText = "DRAW";
+      drawLineSmooth(hand, hp);
+    } else {
+      hp.lastDraw = null;
+    }
+  }
+
+  modeStateEl.textContent = `${hudText} | GIRO: ${rotateEnabled ? "ON" : "OFF"}`;
+
+  updateBlocks();
 });
 
 /* ===================== CAMERA ===================== */
@@ -392,9 +616,9 @@ camera.start().catch(err => {
 });
 
 /* ===================== CREATE BLOCKS ===================== */
-createBlock("Bloco A", 140, 140);
-createBlock("Bloco B", 360, 140);
-createBlock("Bloco C", 580, 140);
+createBlock("Bloco A", 140, 140, TEXTURES[0]);
+createBlock("Bloco B", 380, 140, TEXTURES[1]);
+createBlock("Bloco C", 620, 140, TEXTURES[2]);
 </script>
 
 </body>
